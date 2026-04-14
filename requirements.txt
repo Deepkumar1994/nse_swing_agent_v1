@@ -1,0 +1,8 @@
+crewai>=1.11.0
+crewai[anthropic]
+yfinance
+ta
+requests
+python-dotenv
+tavily-python
+pandas
