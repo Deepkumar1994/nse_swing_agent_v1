@@ -3,28 +3,77 @@
 *.env
 
 # ─── Python ──────────────────────────────────────────────────────────────────
-venv/
 __pycache__/
+*.py[codz]
+*$py.class
 *.pyc
 *.pyo
 *.pyd
 .Python
-*.egg-info/
-dist/
+
+# C extensions
+*.so
+
+# Distribution / packaging
 build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
 
 # ─── Report output files ─────────────────────────────────────────────────────
 swing_report_*.txt
 
-# ─── OS files ────────────────────────────────────────────────────────────────
-.DS_Store
-Thumbs.db
-desktop.ini
+# Logs
+*.log
 
-# ─── IDE files ───────────────────────────────────────────────────────────────
+# Unit test / coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+
+# Jupyter
+.ipynb_checkpoints
+
+# IDEs
 .vscode/
 .idea/
 *.swp
 
-# ─── Logs ────────────────────────────────────────────────────────────────────
-*.log
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Misc
+.mypy_cache/
+.pyre/
+.ruff_cache/
+
+# Cursor
+.cursorignore
+.cursorindexingignore

@@ -1,4 +1,4 @@
-# 🇮🇳 Indian Swing Trading AI Agent v1.0
+# Indian Swing Trading AI Agent v1.0
 
 An AI-powered swing trading agent for Indian equity markets (NSE) that scans Nifty 500 stocks nightly and sends actionable trade recommendations via Telegram.
 
