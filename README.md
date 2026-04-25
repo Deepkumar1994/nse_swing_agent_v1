@@ -1,6 +1,6 @@
 # Indian Swing Trading AI Agent v1.0
 
-An AI-powered swing trading agent for Indian equity markets (NSE) that scans Nifty 500 stocks nightly and sends actionable trade recommendations via Telegram.
+An AI-powered swing trading agent for Indian equity markets (NSE) that scans Nifty 500 stocks and sends actionable trade recommendations via Telegram.
 
 > **Note:** This is v1.0. Version 2.0 with advanced features (sector rotation, earnings check, delivery volume, relative strength, trade history) is available in a separate repository.
 
@@ -98,7 +98,7 @@ python main.py
 ## 🤖 How It Works
 
 ```
-8:00 PM Daily
+8:00 PM Daily(Run Manually according to your time)
      ↓
 Agent 1: Market Analyst
   → Checks Nifty 50, Bank Nifty, India VIX
