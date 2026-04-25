@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import yfinance as yf
 import pandas as pd
 from ta.momentum import RSIIndicator
@@ -5,7 +6,20 @@ from ta.trend import MACD, EMAIndicator
 from ta.volatility import BollingerBands, AverageTrueRange
 from crewai.tools import tool
 from tavily import TavilyClient
+from datetime import datetime
 import os
+import logging
+
+# ─── LOGGING SETUP ───────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler("swing_agent.log", encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+)
+logger = logging.getLogger(__name__)
 
 # ─── NIFTY 500 STOCK LIST (Representative sample) ────────────────────────────
 NIFTY_500_STOCKS = [
@@ -59,6 +73,8 @@ def scan_swing_candidates(sector: str = "all") -> str:
     """
     try:
         candidates = []
+        # FIX P2: Track skipped tickers to surface system errors vs genuine no-signal
+        skipped = []
 
         sector_map = {
             "IT": ["INFY.NS", "TCS.NS", "WIPRO.NS", "HCLTECH.NS", "TECHM.NS", "MPHASIS.NS", "PERSISTENT.NS", "COFORGE.NS"],
@@ -71,6 +87,7 @@ def scan_swing_candidates(sector: str = "all") -> str:
         stocks_to_scan = sector_map.get(sector, NIFTY_500_STOCKS)
 
         for ticker in stocks_to_scan:
+            # FIX P2: Named exception — log actual error, track which ticker failed
             try:
                 stock = yf.Ticker(ticker)
                 df = stock.history(period="3mo")
@@ -110,33 +127,27 @@ def scan_swing_candidates(sector: str = "all") -> str:
                 swing_score = 0
                 signals = []
 
-                # RSI oversold recovery (best swing signal)
                 if 30 < latest_rsi < 50 and latest_rsi > prev_rsi:
                     swing_score += 3
                     signals.append(f"RSI recovering from oversold ({round(latest_rsi,1)})")
 
-                # EMA20 above EMA50 (uptrend)
                 if df["EMA20"].iloc[-1] > df["EMA50"].iloc[-1]:
                     swing_score += 2
                     signals.append("EMA20 > EMA50 (uptrend)")
 
-                # Price bouncing from lower Bollinger Band
                 if current_price <= df["BB_lower"].iloc[-1] * 1.02:
                     swing_score += 2
                     signals.append("Bouncing from Bollinger lower band")
 
-                # Volume spike confirms move
                 if volume_spike and price_change > 0:
                     swing_score += 2
                     signals.append(f"Volume spike ({round(latest_volume/avg_volume,1)}x avg)")
 
-                # Price above EMA20 (momentum)
                 if current_price > df["EMA20"].iloc[-1]:
                     swing_score += 1
                     signals.append("Price above EMA20")
 
                 if swing_score >= 4:
-                    # Calculate entry, SL, target
                     atr = AverageTrueRange(
                         high=df["High"],
                         low=df["Low"],
@@ -164,28 +175,41 @@ def scan_swing_candidates(sector: str = "all") -> str:
                         "atr": round(latest_atr, 2),
                     })
 
-            except Exception:
+            except Exception as e:
+                # FIX P2: Log with actual reason, not silent drop
+                logger.warning(f"Skipping {ticker}: {e}")
+                skipped.append(ticker)
                 continue
 
-        # Sort by score
         candidates = sorted(candidates, key=lambda x: x["score"], reverse=True)[:10]
 
+        # FIX P2: Include skipped summary in output
+        skip_warning = ""
+        if skipped:
+            skip_warning = (
+                f"\nWARNING: {len(skipped)} ticker(s) skipped due to data/API errors: "
+                f"{', '.join(skipped[:5])}{'...' if len(skipped) > 5 else ''}\n"
+            )
+            logger.warning(f"Total skipped: {len(skipped)} tickers — {skipped}")
+
         if not candidates:
-            return "No strong swing candidates found today. Market may be trending down or sideways."
+            return "No strong swing candidates found today. Market may be trending down or sideways." + skip_warning
 
-        result = "🔍 SWING TRADE CANDIDATES FOUND:\n\n"
+        result = "SWING TRADE CANDIDATES FOUND:\n\n"
         for c in candidates:
-            result += f"""
-📈 {c['ticker']}
-- Price: ₹{c['price']} | RSI: {c['rsi']} | Score: {c['score']}/10
-- Entry: ₹{c['entry']} | SL: ₹{c['stop_loss']} | Target: ₹{c['target']}
-- Risk/Reward: {c['rr_ratio']}:1
-- Signals: {', '.join(c['signals'])}
----"""
+            result += (
+                f"\n{c['ticker']}\n"
+                f"- Price: Rs.{c['price']} | RSI: {c['rsi']} | Score: {c['score']}/10\n"
+                f"- Entry: Rs.{c['entry']} | SL: Rs.{c['stop_loss']} | Target: Rs.{c['target']}\n"
+                f"- Risk/Reward: {c['rr_ratio']}:1\n"
+                f"- Signals: {', '.join(c['signals'])}\n"
+                "---"
+            )
 
-        return result
+        return result + skip_warning
 
     except Exception as e:
+        logger.error(f"Fatal error in scan_swing_candidates: {e}")
         return f"Error scanning stocks: {str(e)}"
 
 
@@ -197,8 +221,8 @@ def get_stock_details(ticker: str) -> str:
     Input: NSE ticker with .NS suffix e.g. INFY.NS, TATAMOTORS.NS
     """
     try:
-        if not ticker.endswith(".NS"):
-            ticker = ticker + ".NS"
+        # FIX (my review): Strip first then append — prevents INFY.NS.NS double suffix
+        ticker = ticker.replace(".NS", "").replace(".BO", "") + ".NS"
 
         stock = yf.Ticker(ticker)
         df = stock.history(period="6mo")
@@ -207,7 +231,6 @@ def get_stock_details(ticker: str) -> str:
         if df.empty:
             return f"No data for {ticker}"
 
-        # Technicals
         rsi = RSIIndicator(close=df["Close"], window=14).rsi()
         macd = MACD(close=df["Close"])
         ema20 = EMAIndicator(close=df["Close"], window=20).ema_indicator()
@@ -215,55 +238,60 @@ def get_stock_details(ticker: str) -> str:
         atr = AverageTrueRange(high=df["High"], low=df["Low"], close=df["Close"], window=14).average_true_range()
 
         current_price = round(df["Close"].iloc[-1], 2)
-        week_high = round(df["High"].iloc[-5:].max(), 2)
-        week_low = round(df["Low"].iloc[-5:].min(), 2)
-        month_change = round(((current_price - df["Close"].iloc[-21]) / df["Close"].iloc[-21]) * 100, 2)
-        week_change = round(((current_price - df["Close"].iloc[-5]) / df["Close"].iloc[-5]) * 100, 2)
+        n = len(df)
 
-        # Support/Resistance
+        # FIX P2: Degrade gracefully for thin/newly listed stocks
+        week_high = round(df["High"].iloc[-min(5, n):].max(), 2)
+        week_low = round(df["Low"].iloc[-min(5, n):].min(), 2)
+        month_change = (
+            round(((current_price - df["Close"].iloc[-21]) / df["Close"].iloc[-21]) * 100, 2)
+            if n >= 21 else "N/A (insufficient history)"
+        )
+        week_change = (
+            round(((current_price - df["Close"].iloc[-5]) / df["Close"].iloc[-5]) * 100, 2)
+            if n >= 5 else "N/A (insufficient history)"
+        )
+
         support = round(df["Low"].iloc[-20:].min(), 2)
         resistance = round(df["High"].iloc[-20:].max(), 2)
 
-        # Fundamentals
         pe = info.get("trailingPE", "N/A")
         sector = info.get("sector", "N/A")
         market_cap = info.get("marketCap", 0)
-        market_cap_cr = f"₹{round(market_cap/1e7):,} Cr" if market_cap else "N/A"
+        market_cap_cr = f"Rs.{round(market_cap/1e7):,} Cr" if market_cap else "N/A"
 
-        return f"""
-📊 DETAILED ANALYSIS: {ticker}
-
-💰 PRICE DATA:
-- Current: ₹{current_price}
-- Week Change: {week_change}%
-- Month Change: {month_change}%
-- Week High/Low: ₹{week_high} / ₹{week_low}
-- Support: ₹{support} | Resistance: ₹{resistance}
-
-📈 TECHNICALS:
-- RSI (14): {round(rsi.iloc[-1], 2)}
-- MACD: {round(macd.macd().iloc[-1], 4)} | Signal: {round(macd.macd_signal().iloc[-1], 4)}
-- EMA20: ₹{round(ema20.iloc[-1], 2)} | EMA50: ₹{round(ema50.iloc[-1], 2)}
-- ATR (14): ₹{round(atr.iloc[-1], 2)}
-- Trend: {'Bullish' if ema20.iloc[-1] > ema50.iloc[-1] else 'Bearish'}
-
-🏢 FUNDAMENTALS:
-- Sector: {sector}
-- Market Cap: {market_cap_cr}
-- PE Ratio: {round(pe, 2) if isinstance(pe, float) else pe}
-"""
+        return (
+            f"\nDETAILED ANALYSIS: {ticker}\n\n"
+            f"PRICE DATA:\n"
+            f"- Current: Rs.{current_price}\n"
+            f"- Week Change: {week_change}%\n"
+            f"- Month Change: {month_change}%\n"
+            f"- Week High/Low: Rs.{week_high} / Rs.{week_low}\n"
+            f"- Support: Rs.{support} | Resistance: Rs.{resistance}\n\n"
+            f"TECHNICALS:\n"
+            f"- RSI (14): {round(rsi.iloc[-1], 2)}\n"
+            f"- MACD: {round(macd.macd().iloc[-1], 4)} | Signal: {round(macd.macd_signal().iloc[-1], 4)}\n"
+            f"- EMA20: Rs.{round(ema20.iloc[-1], 2)} | EMA50: Rs.{round(ema50.iloc[-1], 2)}\n"
+            f"- ATR (14): Rs.{round(atr.iloc[-1], 2)}\n"
+            f"- Trend: {'Bullish' if ema20.iloc[-1] > ema50.iloc[-1] else 'Bearish'}\n\n"
+            f"FUNDAMENTALS:\n"
+            f"- Sector: {sector}\n"
+            f"- Market Cap: {market_cap_cr}\n"
+            f"- PE Ratio: {round(pe, 2) if isinstance(pe, float) else pe}\n"
+        )
 
     except Exception as e:
-        return f"Error: {str(e)}"
+        logger.error(f"Error in get_stock_details for {ticker}: {e}")
+        return f"Error fetching details for {ticker}: {str(e)}"
 
 
 # ─── TOOL 3: MARKET MOOD ─────────────────────────────────────────────────────
 @tool("Get Overall Market Mood")
-def get_market_mood(dummy: str = "check") -> str:
+def get_market_mood(market: str = "all") -> str:
     """
     Checks overall Indian market mood using Nifty 50, Bank Nifty, India VIX.
     Returns whether market conditions favor swing trading today.
-    Input: any string like 'check'
+    Input: any string like 'all' or 'check'
     """
     try:
         indices = {
@@ -272,47 +300,50 @@ def get_market_mood(dummy: str = "check") -> str:
             "India VIX": "^INDIAVIX",
         }
 
-        result = "🌡️ MARKET MOOD CHECK:\n\n"
+        result = "MARKET MOOD CHECK:\n\n"
         overall_bullish = 0
 
         for name, symbol in indices.items():
+            # FIX P2: Named exception instead of bare except
             try:
                 ticker = yf.Ticker(symbol)
                 df = ticker.history(period="5d")
-                if df.empty:
+                if df.empty or len(df) < 2:
+                    logger.warning(f"Insufficient data for index {name} ({symbol})")
                     continue
 
                 current = round(df["Close"].iloc[-1], 2)
                 prev = round(df["Close"].iloc[-2], 2)
                 change = round(((current - prev) / prev) * 100, 2)
-                trend = "📈" if change > 0 else "📉"
+                arrow = "UP" if change > 0 else "DOWN"
 
-                result += f"{trend} {name}: {current} ({change:+.2f}%)\n"
+                result += f"{arrow} {name}: {current} ({change:+.2f}%)\n"
 
                 if name != "India VIX" and change > 0:
                     overall_bullish += 1
                 if name == "India VIX" and current < 15:
                     overall_bullish += 1
 
-            except:
+            except Exception as e:
+                logger.warning(f"Failed to fetch index {name}: {e}")
                 continue
 
-        # SGX Nifty as pre-market indicator
         result += "\n"
 
         if overall_bullish >= 2:
-            result += "✅ MARKET MOOD: BULLISH — Good day for swing trade entries\n"
-            result += "📊 Recommendation: Look for long setups\n"
+            result += "MARKET MOOD: BULLISH -- Good day for swing trade entries\n"
+            result += "Recommendation: Look for long setups\n"
         elif overall_bullish == 1:
-            result += "⚠️ MARKET MOOD: NEUTRAL — Be selective with entries\n"
-            result += "📊 Recommendation: Only highest conviction trades\n"
+            result += "MARKET MOOD: NEUTRAL -- Be selective with entries\n"
+            result += "Recommendation: Only highest conviction trades\n"
         else:
-            result += "🔴 MARKET MOOD: BEARISH — Avoid new long entries today\n"
-            result += "📊 Recommendation: Stay in cash, wait for better setup\n"
+            result += "MARKET MOOD: BEARISH -- Avoid new long entries today\n"
+            result += "Recommendation: Stay in cash, wait for better setup\n"
 
         return result
 
     except Exception as e:
+        logger.error(f"Fatal error in get_market_mood: {e}")
         return f"Error checking market mood: {str(e)}"
 
 
@@ -325,10 +356,14 @@ def get_swing_news(ticker: str) -> str:
     """
     try:
         company = ticker.replace(".NS", "").replace(".BO", "")
-        query = f"{company} India stock news March 2026"
+
+        # FIX P1: Build query from live datetime at call time.
+        # Also pass days=7 to Tavily so it only returns genuinely recent results.
+        today = datetime.now()
+        query = f"{company} India stock news {today.strftime('%d %B %Y')}"
 
         client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
-        results = client.search(query, max_results=5)
+        results = client.search(query, max_results=5, days=7)
 
         positive_keywords = [
             "buy", "upgrade", "target", "growth", "profit", "beat", "strong",
@@ -339,35 +374,48 @@ def get_swing_news(ticker: str) -> str:
             "fraud", "fine", "penalty", "decline", "drop", "warning"
         ]
 
+        # FIX P3: Use .get() with empty-list fallback — don't assume key exists
+        items = results.get("results", [])
+
+        if not items:
+            return f"No recent news found for {ticker}. Trade based on technicals only."
+
         headlines = []
         positive_count = 0
         negative_count = 0
 
-        for r in results["results"]:
-            title = r["title"]
+        for r in items:
+            title = r.get("title", "")
+            if not title:
+                continue
             headlines.append(f"  - {title}")
             if any(kw in title.lower() for kw in positive_keywords):
                 positive_count += 1
             if any(kw in title.lower() for kw in negative_keywords):
                 negative_count += 1
 
-        if positive_count > negative_count:
-            sentiment = "🟢 Positive — supports swing buy"
-        elif negative_count > positive_count:
-            sentiment = "🔴 Negative — avoid swing buy"
-        else:
-            sentiment = "🟡 Neutral — trade based on technicals only"
+        # FIX P3: Report against actual count, not hardcoded /5
+        total = len(headlines)
 
-        return f"""
-📰 NEWS: {ticker}
-- Sentiment: {sentiment}
-- Positive headlines: {positive_count}/5
-- Negative headlines: {negative_count}/5
-- Headlines:
-{chr(10).join(headlines)}
-"""
+        if positive_count > negative_count:
+            sentiment = "Positive -- supports swing buy"
+        elif negative_count > positive_count:
+            sentiment = "Negative -- avoid swing buy"
+        else:
+            sentiment = "Neutral -- trade based on technicals only"
+
+        return (
+            f"\nNEWS: {ticker}\n"
+            f"- Sentiment: {sentiment}\n"
+            f"- Positive headlines: {positive_count}/{total}\n"
+            f"- Negative headlines: {negative_count}/{total}\n"
+            f"- Headlines:\n"
+            f"{chr(10).join(headlines)}\n"
+        )
+
     except Exception as e:
-        return f"Error fetching news: {str(e)}"
+        logger.error(f"Error in get_swing_news for {ticker}: {e}")
+        return f"Error fetching news for {ticker}: {str(e)}"
 
 
 # ─── TOOL 5: SEND TELEGRAM ───────────────────────────────────────────────────
@@ -383,28 +431,42 @@ def send_telegram_report(message: str) -> str:
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
         if not token or not chat_id:
-            return "❌ Telegram credentials missing in .env"
+            return "Telegram credentials missing in .env"
 
-        # Telegram has 4096 char limit — split if needed
         max_length = 4000
-        messages = [message[i:i+max_length] for i in range(0, len(message), max_length)]
+        messages_to_send = [message[i:i+max_length] for i in range(0, len(message), max_length)]
 
-        for msg in messages:
+        for msg in messages_to_send:
             url = f"https://api.telegram.org/bot{token}/sendMessage"
+
+            # Attempt 1: with Markdown formatting
             response = requests.post(url, data={
                 "chat_id": chat_id,
                 "text": msg,
                 "parse_mode": "Markdown"
-            })
+            }, timeout=10)
             result = response.json()
+
+            # FIX P1: If Markdown fails, retry as plain text AND check the fallback result too
             if not result.get("ok"):
-                # Try without markdown if it fails
-                response = requests.post(url, data={
+                logger.warning(
+                    f"Markdown send failed ({result.get('description', 'unknown')}) "
+                    f"— retrying as plain text"
+                )
+                fallback_response = requests.post(url, data={
                     "chat_id": chat_id,
                     "text": msg,
-                })
+                }, timeout=10)
+                fallback_result = fallback_response.json()
 
-        return "✅ Report sent to Telegram successfully!"
+                # FIX P1: Both attempts failed — return the actual Telegram error, not a false success
+                if not fallback_result.get("ok"):
+                    error_desc = fallback_result.get("description", "Unknown Telegram error")
+                    logger.error(f"Telegram send failed on both attempts: {error_desc}")
+                    return f"Telegram send failed: {error_desc}"
+
+        return "Report sent to Telegram successfully!"
 
     except Exception as e:
-        return f"❌ Telegram send failed: {str(e)}"
+        logger.error(f"Telegram exception: {e}")
+        return f"Telegram send failed: {str(e)}"
